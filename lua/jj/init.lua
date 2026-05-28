@@ -6,6 +6,7 @@ local terminal = require("jj.ui.terminal")
 local diff = require("jj.diff")
 local browse = require("jj.browse")
 local file = require("jj.file")
+local annotate = require("jj.annotate")
 
 --- Jujutsu plugin configuration
 --- @class jj.Config
@@ -15,6 +16,7 @@ local file = require("jj.file")
 --- @field editor? jj.ui.editor.opts Options for the editor module
 --- @field highlights? jj.highlights Options for the highlights
 --- @field diff? jj.diff.config Options for the diff module
+--- @field annotate? table Options for the annotate module
 
 --- @class jj.highlights
 --- @field editor? jj.ui.editor.highlights Highlight configuration for describe buffer
@@ -56,6 +58,12 @@ M.config = {
 		backend = "native",
 		backends = {},
 	},
+	annotate = {
+		virtual_text = {
+			position = "right_align",
+			display = "all",
+		},
+	},
 }
 
 --- Setup the plugin
@@ -69,6 +77,7 @@ function M.setup(opts)
 	cmd.setup(M.config.cmd)
 	terminal.setup(M.config.terminal)
 	diff.setup(M.config.diff)
+	annotate.setup(M.config.annotate)
 
 	-- Register the commands form the different modules
 	cmd.register_command()

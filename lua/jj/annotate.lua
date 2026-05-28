@@ -10,6 +10,27 @@ local parser = require("jj.core.parser")
 -- Track the last annotation tooltip buffer
 local last_tooltip_buf = nil
 
+local config = {
+	virtual_text = {
+		position = "right_align",
+		display = "all",
+	},
+}
+
+local virtual_state = {
+	ns = vim.api.nvim_create_namespace("jj_annotate_virtual"),
+	buffers = {},
+}
+
+local annotate_template =
+	'join(" | ", commit.change_id().short(6), commit.author().name(), commit.author().timestamp().format("%Y-%m-%d")) ++ "\n"'
+
+--- Configure annotate behavior.
+--- @param opts? table
+function M.setup(opts)
+	config = vim.tbl_deep_extend("force", config, opts or {})
+end
+
 --- Resolve current buffer into an annotate target.
 --- Supports normal file buffers and jj:// virtual buffers.
 --- @return string|nil path Repository-relative or absolute path for `jj file annotate`
@@ -114,6 +135,16 @@ local function setup_blame_highlighting(buf, annotations)
 	end
 end
 
+--- Ensure the per-change-id highlight group exists.
+--- @param change_id string
+--- @return string hl_group
+local function ensure_change_highlight(change_id)
+	local hl_group = "JJAnnotateId" .. change_id:gsub("%W", "_")
+	local hash = vim.fn.sha256(change_id):sub(1, 6)
+	vim.api.nvim_set_hl(0, hl_group, { fg = "#" .. hash })
+	return hl_group
+end
+
 --- Pads correctly the annotations so that all are the same length
 --- @param lines string[] The lines to format
 --- @return string[]
@@ -157,6 +188,134 @@ local function align_annotations(lines)
 	end
 
 	return result
+end
+
+--- Clear virtual annotations from a buffer.
+--- @param buf integer
+local function clear_virtual(buf)
+	if vim.api.nvim_buf_is_valid(buf) then
+		vim.api.nvim_buf_clear_namespace(buf, virtual_state.ns, 0, -1)
+	end
+	local state = virtual_state.buffers[buf]
+	if state and state.augroup then
+		pcall(vim.api.nvim_del_augroup_by_id, state.augroup)
+	end
+	virtual_state.buffers[buf] = nil
+end
+
+--- Map annotations from the saved/base file lines onto the current buffer lines.
+--- Unsaved added/changed lines intentionally get no annotation so extmarks do not
+--- drift onto unrelated lines while editing.
+--- @param annotations string[]
+--- @param base_lines string[]|nil
+--- @param current_lines string[]
+--- @return (string|nil)[]
+local function map_annotations_to_current_lines(annotations, base_lines, current_lines)
+	if not base_lines then
+		return annotations
+	end
+
+	local ok, hunks = pcall(vim.diff, table.concat(base_lines, "\n"), table.concat(current_lines, "\n"), {
+		result_type = "indices",
+	})
+	if not ok or not hunks then
+		return annotations
+	end
+
+	local mapped = {}
+	local base_pos = 1
+	local current_pos = 1
+
+	for _, hunk in ipairs(hunks) do
+		local base_start, base_count, current_start, current_count = hunk[1], hunk[2], hunk[3], hunk[4]
+		local equal_base_end = base_count == 0 and base_start or base_start - 1
+		local equal_current_end = current_count == 0 and current_start or current_start - 1
+
+		while base_pos <= equal_base_end and current_pos <= equal_current_end do
+			mapped[current_pos] = annotations[base_pos]
+			base_pos = base_pos + 1
+			current_pos = current_pos + 1
+		end
+
+		-- Changed/added current lines are unsaved relative to the annotate output.
+		-- Leave them nil/blank rather than showing stale blame.
+		for _ = 1, current_count do
+			mapped[current_pos] = nil
+			current_pos = current_pos + 1
+		end
+
+		base_pos = equal_base_end + base_count + 1
+	end
+
+	while current_pos <= #current_lines do
+		mapped[current_pos] = annotations[base_pos]
+		base_pos = base_pos + 1
+		current_pos = current_pos + 1
+	end
+
+	return mapped
+end
+
+--- Render virtual annotations into the current/source buffer.
+--- @param buf integer
+--- @param annotations (string|nil)[]
+--- @param opts? table
+local function render_virtual(buf, annotations, opts)
+	opts = opts or {}
+	vim.api.nvim_buf_clear_namespace(buf, virtual_state.ns, 0, -1)
+
+	local source_line_count = vim.api.nvim_buf_line_count(buf)
+	local last_rev = nil
+	local display = opts.display or config.virtual_text.display or "all"
+	local position = opts.position or config.virtual_text.position
+	local max = source_line_count
+	for i = 1, max do
+		local annotation = annotations[i]
+		local parsed = annotation and parser.parse_annotation_line(annotation) or nil
+		if parsed and parsed.rev.value then
+			local rev = parsed.rev.value
+			local should_show = display == "all" or rev ~= last_rev
+			last_rev = rev
+
+			if should_show then
+				local virt_text = {
+					{ rev, ensure_change_highlight(rev) },
+					{ " " .. (parsed.name.value or ""), "JJAnnotateName" },
+					{ " " .. (parsed.date.value or ""), "JJAnnotateDate" },
+				}
+
+				vim.api.nvim_buf_set_extmark(buf, virtual_state.ns, i - 1, 0, {
+					virt_text = virt_text,
+					virt_text_pos = position,
+					right_gravity = false,
+				})
+			end
+		end
+	end
+end
+
+--- Refresh virtual annotations for a buffer state.
+--- @param buf integer
+local function refresh_virtual(buf)
+	local state = virtual_state.buffers[buf]
+	if not state or not vim.api.nvim_buf_is_valid(buf) then
+		return
+	end
+
+	local raw_output, success = runner.execute_command(
+		build_annotate_cmd(state.filename, annotate_template, state.revision),
+		"Failed to annotate file",
+		nil,
+		true
+	)
+	if not success or not raw_output then
+		return
+	end
+
+	local annotations = align_annotations(vim.split(raw_output, "\n", { trimempty = true }))
+	state.annotations = annotations
+	local current_lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+	render_virtual(buf, map_annotations_to_current_lines(annotations, state.base_lines, current_lines), state.opts)
 end
 
 local function handle_enter()
@@ -211,9 +370,6 @@ function M.file()
 		return
 	end
 
-	local template =
-		'join(" | ", commit.change_id().short(6), commit.author().name(), commit.author().timestamp().format("%Y-%m-%d %H:%M:%S %Z")) ++ "\n"'
-
 	local filename, revision, err = get_annotate_target()
 	if not filename then
 		utils.notify(err or "Could not extract file from buffer", vim.log.levels.ERROR)
@@ -221,7 +377,7 @@ function M.file()
 	end
 
 	local raw_output, success =
-		runner.execute_command(build_annotate_cmd(filename, template, revision), "Failed to annotate file")
+		runner.execute_command(build_annotate_cmd(filename, annotate_template, revision), "Failed to annotate file")
 	if not success or not raw_output then
 		return
 	end
@@ -344,9 +500,6 @@ function M.line()
 		end
 	end
 
-	local template =
-		'join(" | ", commit.change_id().short(6), commit.author().name(), commit.author().timestamp().format("%Y-%m-%d %H:%M:%S %Z")) ++ "\n"'
-
 	local filename, revision, err = get_annotate_target()
 	if not filename then
 		utils.notify(err or "Could not extract file from buffer", vim.log.levels.ERROR)
@@ -355,7 +508,7 @@ function M.line()
 
 	local line_num = vim.fn.line(".")
 	local raw_output, success =
-		runner.execute_command(build_annotate_cmd(filename, template, revision), "Failed to annotate line")
+		runner.execute_command(build_annotate_cmd(filename, annotate_template, revision), "Failed to annotate line")
 	if not success or not raw_output then
 		return
 	end
@@ -404,6 +557,105 @@ function M.line()
 			last_tooltip_buf = nil
 		end,
 	})
+end
+
+--- Toggle virtual-text annotations for the current file.
+--- @param opts? {display?: "all"|"changed"|"first", position?: string}
+function M.virtual(opts)
+	opts = opts or {}
+	if not utils.ensure_jj() then
+		return
+	end
+
+	local source_buf = vim.api.nvim_get_current_buf()
+	if virtual_state.buffers[source_buf] then
+		clear_virtual(source_buf)
+		return
+	end
+
+	local filename, revision, err = get_annotate_target()
+	if not filename then
+		utils.notify(err or "Could not extract file from buffer", vim.log.levels.ERROR)
+		return
+	end
+
+	local raw_output, success =
+		runner.execute_command(build_annotate_cmd(filename, annotate_template, revision), "Failed to annotate file")
+	if not success or not raw_output then
+		return
+	end
+
+	vim.api.nvim_set_hl(0, "JJAnnotateName", { link = "String" })
+	vim.api.nvim_set_hl(0, "JJAnnotateDate", { link = "PreProc" })
+
+	local annotations = align_annotations(vim.split(raw_output, "\n", { trimempty = true }))
+	local base_lines = vim.api.nvim_buf_get_lines(source_buf, 0, -1, false)
+	if vim.bo[source_buf].modified and not revision then
+		local ok, disk_lines = pcall(vim.fn.readfile, filename)
+		if ok then
+			base_lines = disk_lines
+		end
+	end
+
+	local render_opts = {
+		display = opts.display,
+		position = opts.position,
+	}
+	render_virtual(
+		source_buf,
+		map_annotations_to_current_lines(annotations, base_lines, vim.api.nvim_buf_get_lines(source_buf, 0, -1, false)),
+		render_opts
+	)
+
+	local augroup = vim.api.nvim_create_augroup("JJAnnotateVirtual" .. source_buf, { clear = true })
+	virtual_state.buffers[source_buf] = {
+		filename = filename,
+		revision = revision,
+		augroup = augroup,
+		opts = render_opts,
+		base_lines = base_lines,
+		annotations = annotations,
+	}
+
+	vim.api.nvim_create_autocmd("BufWipeout", {
+		group = augroup,
+		buffer = source_buf,
+		once = true,
+		callback = function()
+			clear_virtual(source_buf)
+		end,
+	})
+
+	if not revision then
+		vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+			group = augroup,
+			buffer = source_buf,
+			callback = function()
+				local state = virtual_state.buffers[source_buf]
+				if not state then
+					return
+				end
+				local current_lines = vim.api.nvim_buf_get_lines(source_buf, 0, -1, false)
+				render_virtual(
+					source_buf,
+					map_annotations_to_current_lines(state.annotations, state.base_lines, current_lines),
+					state.opts
+				)
+			end,
+		})
+
+		vim.api.nvim_create_autocmd("BufWritePost", {
+			group = augroup,
+			buffer = source_buf,
+			callback = function()
+				local state = virtual_state.buffers[source_buf]
+				if state then
+					state.base_lines = vim.api.nvim_buf_get_lines(source_buf, 0, -1, false)
+				end
+				refresh_virtual(source_buf)
+			end,
+		})
+	end
 end
 
 return M

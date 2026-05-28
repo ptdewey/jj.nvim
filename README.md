@@ -981,6 +981,8 @@ View file blame and line history using the annotate module. Can be invoked via c
 ```sh
 :J annotate         " Show blame/annotations for entire file in vertical split
 :J annotate_line    " Show annotation for current line in floating buffer
+:J annotate_virtual " Toggle virtual-text annotations for the current file
+:J annotate_virtual first " Compact mode: show only first line per consecutive change
 ```
 
 **Via Lua API:**
@@ -989,6 +991,7 @@ View file blame and line history using the annotate module. Can be invoked via c
 local annotate = require("jj.annotate")
 annotate.file()    -- Show blame/annotations for entire file in vertical split
 annotate.line()    -- Show annotation for current line in a tooltip
+annotate.virtual() -- Toggle virtual-text annotations for the current file
 ```
 
 The file annotation displays a vertical split showing:
@@ -1001,12 +1004,18 @@ Press `<CR>` on any annotation line to view the diff for that change.
 
 The line annotation displays a floating tooltip with the current line's annotation and the commit description.
 
+The virtual annotation displays right-aligned virtual text on each source line by default. Pass `display = "first"` to only show the first line in each consecutive block from the same change.
+
 Example keymaps:
 
 ```lua
 local annotate = require("jj.annotate")
 vim.keymap.set("n", "<leader>ja", annotate.file, { desc = "JJ annotate file" })
 vim.keymap.set("n", "<leader>jA", annotate.line, { desc = "JJ annotate line" })
+vim.keymap.set("n", "<leader>jv", annotate.virtual, { desc = "JJ annotate virtual" })
+vim.keymap.set("n", "<leader>jV", function()
+  annotate.virtual({ display = "first" })
+end, { desc = "JJ annotate virtual compact" })
 ```
 
 ## Example config

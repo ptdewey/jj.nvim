@@ -1323,6 +1323,9 @@ function M.j(args)
 		annotate_line = function()
 			require("jj.annotate").line()
 		end,
+		annotate_virtual = function()
+			require("jj.annotate").virtual({ display = remaining_args[1] })
+		end,
 		commit = function()
 			M.commit(remaining_args_str ~= "" and remaining_args_str or nil)
 		end,
@@ -1393,6 +1396,7 @@ function M.register_command()
 				"open_pr",
 				"annotate",
 				"annotate_line",
+				"annotate_virtual",
 				"commit",
 				"tag",
 				"fetch_pr",
