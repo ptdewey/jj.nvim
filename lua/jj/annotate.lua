@@ -24,6 +24,9 @@ local virtual_state = {
 }
 
 local annotate_template =
+	'join(" | ", commit.change_id().short(6), commit.author().name(), commit.author().timestamp().format("%Y-%m-%d %H:%M:%S %Z")) ++ "\n"'
+
+local virtual_annotate_template =
 	'join(" | ", commit.change_id().short(6), commit.author().name(), commit.author().timestamp().format("%Y-%m-%d")) ++ "\n"'
 
 --- Configure annotate behavior.
@@ -321,7 +324,7 @@ local function refresh_virtual(buf)
 	end
 
 	local raw_output, success = runner.execute_command(
-		build_annotate_cmd(state.filename, annotate_template, state.revision),
+		build_annotate_cmd(state.filename, virtual_annotate_template, state.revision),
 		"Failed to annotate file",
 		nil,
 		true
@@ -611,7 +614,7 @@ function M.virtual(opts)
 	end
 
 	local raw_output, success =
-		runner.execute_command(build_annotate_cmd(filename, annotate_template, revision), "Failed to annotate file")
+		runner.execute_command(build_annotate_cmd(filename, virtual_annotate_template, revision), "Failed to annotate file")
 	if not success or not raw_output then
 		return
 	end
