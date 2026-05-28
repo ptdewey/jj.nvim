@@ -59,6 +59,7 @@ M.config = {
 		backends = {},
 	},
 	annotate = {
+		default_view = "split",
 		virtual_text = {
 			position = "right_align",
 			display = "all",

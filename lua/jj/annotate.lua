@@ -11,6 +11,7 @@ local parser = require("jj.core.parser")
 local last_tooltip_buf = nil
 
 local config = {
+	default_view = "split",
 	virtual_text = {
 		position = "right_align",
 		display = "all",
@@ -29,6 +30,23 @@ local annotate_template =
 --- @param opts? table
 function M.setup(opts)
 	config = vim.tbl_deep_extend("force", config, opts or {})
+end
+
+--- Parse annotate command arguments into dispatcher options.
+--- @param args? string[]
+--- @return table
+function M.parse_args(args)
+	args = args or {}
+	local opts = {}
+
+	if args[1] == "split" or args[1] == "virtual" then
+		opts.view = args[1]
+		opts.display = args[2]
+	else
+		opts.display = args[1]
+	end
+
+	return opts
 end
 
 --- Resolve current buffer into an annotate target.
@@ -557,6 +575,19 @@ function M.line()
 			last_tooltip_buf = nil
 		end,
 	})
+end
+
+--- Annotate the current file using the configured default view or an override.
+--- @param opts? {view?: "split"|"virtual", display?: "all"|"first", position?: string}
+function M.annotate(opts)
+	opts = opts or {}
+	local view = opts.view or config.default_view or "split"
+
+	if view == "virtual" then
+		return M.virtual({ display = opts.display, position = opts.position })
+	end
+
+	return M.file()
 end
 
 --- Toggle virtual-text annotations for the current file.
